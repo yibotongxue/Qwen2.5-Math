@@ -155,6 +155,44 @@ def is_multi_choice(answer):
     return True
 
 
+def get_stop_token_ids(tokenizer, model_name=""):
+    """
+    根据 tokenizer 和模型名，返回适用于 vLLM 的 stop_token_ids 列表。
+    - 总是包含 tokenizer.eos_token_id（如果有）
+    - 根据常见模型添加额外的结束标记（如 <|im_end|>, <|eot_id|> 等）
+    """
+    stop_ids = set()
+    if tokenizer.eos_token_id is not None:
+        stop_ids.add(tokenizer.eos_token_id)
+
+    # 根据模型名称或标记特征添加特定结束标记
+    model_name_lower = model_name.lower()
+    
+    # ChatML 风格（如 Qwen, 部分 Mistral/Llama 变体）
+    if "qwen" in model_name_lower or "chatml" in model_name_lower:
+        im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+        if im_end_id != tokenizer.unk_token_id:
+            stop_ids.add(im_end_id)
+    
+    # Llama 3 系列
+    if "llama-3" in model_name_lower or "llama3" in model_name_lower:
+        eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        if eot_id != tokenizer.unk_token_id:
+            stop_ids.add(eot_id)
+    
+    # 可以继续添加其他模型：如 "deepseek", "phi" 等
+    
+    # 备用：检查 additional_special_tokens 中常见的结束标记（启发式）
+    # 但为避免误加，只添加明确是结束标记的常见词
+    common_stop_tokens = ["<|im_end|>", "<|eot_id|>", "</s>", "<|endoftext|>"]
+    for token in common_stop_tokens:
+        tok_id = tokenizer.convert_tokens_to_ids(token)
+        if tok_id != tokenizer.unk_token_id:
+            stop_ids.add(tok_id)
+    
+    return list(stop_ids)
+
+
 def main(llm, tokenizer, data_name, args):
     examples, processed_samples, out_file = prepare_data(data_name, args)
     print("=" * 50)
@@ -188,7 +226,7 @@ def main(llm, tokenizer, data_name, args):
             "question": example["question"],
             "gt_cot": gt_cot,
             "gt": gt_ans,
-            "prompt": full_prompt,
+            "prompt": example["question"],
         }
 
         # add remain fields
@@ -219,7 +257,10 @@ def main(llm, tokenizer, data_name, args):
     if args.apply_chat_template:
         input_prompts = [
             tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt.strip()}],
+                [
+                    {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{{}}."},
+                    {"role": "user", "content": prompt.strip()},
+                ],
                 tokenize=False,
                 add_generation_prompt=True,
             )
@@ -265,12 +306,16 @@ def main(llm, tokenizer, data_name, args):
                     top_p=args.top_p,
                     max_tokens=args.max_tokens_per_call,
                     n=1,
-                    stop=stop_words,
-                    stop_token_ids=(
-                        [151645, 151643]
-                        if "qwen2" in args.model_name_or_path.lower()
-                        else None
-                    ),
+                    # stop=stop_words,
+                    # stop_token_ids=(
+                    #     [151645, 151643]
+                    #     if "qwen2" in args.model_name_or_path.lower()
+                    #     else None
+                    # ),
+                    stop_token_ids=get_stop_token_ids(tokenizer, args.model_name_or_path),
+                    # presence_penalty=0.1,
+                    # frequency_penalty=0.1,
+                    # repetition_penalty=1.1,
                 ),
             )
 
